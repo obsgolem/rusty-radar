@@ -61,36 +61,6 @@ impl FFT for Array1<Complex32> {
     }
 }
 
-pub fn time_to_frequency(t: &Array1<f32>) -> Array1<f32> {
-    let delta_t = t.last().unwrap() - t.first().unwrap();
-
-    Array1::from_iter((0..t.len()).map(|n| n as f32 / delta_t))
-}
-
-// Inverse to the above operation and not to any of the others
-pub fn freqency_to_time(f: &Array1<f32>) -> Array1<f32> {
-    let delta_f = f.last().unwrap() - f.first().unwrap();
-
-    Array1::from_iter((0..f.len()).map(|n| n as f32 / delta_f))
-}
-
-pub fn time_to_frequency_neg(t: &Array1<f32>) -> Array1<f32> {
-    let N = t.len() as f32;
-    let f = |x: f32| N * 2. * (x / N - (0.5 + x / N).floor());
-
-    Array1::from_iter((0..t.len()).map(|n| f(n as f32)))
-}
-
-pub fn time_to_frequency_plottable(t: &Array1<f32>) -> Array1<f32> {
-    let delta_t = t.last().unwrap() - t.first().unwrap();
-
-    Array1::linspace(
-        -(t.len() as f32) / (2. * delta_t),
-        (t.len() as f32) / (2. * delta_t),
-        t.len(),
-    )
-}
-
 #[cfg(test)]
 mod test {
     use approx::assert_relative_eq;

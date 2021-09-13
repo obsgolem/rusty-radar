@@ -8,7 +8,7 @@ use crate::{
     helper::{vec_to_aspect, wavelength},
     helper_traits::SphericalFunction,
     scene::PointTarget,
-    signal::{realization::SignalRealization, scalar::Scalar, Pulse},
+    signal::{scalar::Scalar, Pulse},
 };
 
 const c: f32 = 299_792_458.0;
@@ -66,19 +66,17 @@ purposes, we will use the t=0 point of the signal, not the end. This is only pos
 available, as such a filter needs knowledge of the samples at times after the current input time (it is *non-causal*)
 */
 pub fn apply_matched_filter<T: Scalar>(
-    xmtd_signal: &SignalRealization<T>,
-    rcvd_signal: &SignalRealization<T>,
+    xmtd_signal: &Array1<T>,
+    rcvd_signal: &Array1<T>,
 ) -> Array1<T> {
-    let xmtd = xmtd_signal.signal_ref();
-    let signal = rcvd_signal.signal();
-    let mut filtered = signal.clone();
-    for i in 0..signal.len() {
+    let mut filtered = rcvd_signal.clone();
+    for i in 0..rcvd_signal.len() {
         let mut acc = T::zero();
-        for j in 0..xmtd.len() {
-            if i + j >= signal.len() {
+        for j in 0..xmtd_signal.len() {
+            if i + j >= rcvd_signal.len() {
                 break;
             } else {
-                acc += signal[i + j] * xmtd[j].conj();
+                acc += rcvd_signal[i + j] * xmtd_signal[j].conj();
             }
         }
         filtered[i] = acc;

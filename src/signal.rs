@@ -20,13 +20,11 @@ use rustfft::{Fft, FftPlanner};
 
 use self::{
     fir::{hamming_window, sinc_lowpass},
-    realization::SignalRealization,
     scalar::Scalar,
 };
 
 pub mod fft;
 pub mod fir;
-pub mod realization;
 pub mod scalar;
 
 pub fn sampling_freq_to_len(interval: f32, sampling_frequency: f32) -> usize {
