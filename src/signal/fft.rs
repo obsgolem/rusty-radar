@@ -10,6 +10,7 @@ pub trait FFT {
     fn fft_plottable(self) -> Array1<Complex32>;
 
     fn ifft(self) -> Array1<Complex32>;
+    fn ifft_plottable(self) -> Array1<Complex32>;
 }
 
 impl FFT for Array1<f32> {
@@ -27,6 +28,10 @@ impl FFT for Array1<f32> {
 
     fn fft_planned(self, plan: &Arc<dyn rustfft::Fft<f32>>) -> Array1<Complex32> {
         self.mapv(|x| Complex32::new(x, 0.)).fft_planned(plan)
+    }
+
+    fn ifft_plottable(self) -> Array1<Complex32> {
+        self.mapv(|x| Complex32::new(x, 0.)).ifft_plottable()
     }
 }
 
@@ -58,6 +63,13 @@ impl FFT for Array1<Complex32> {
         let N = self.len() as f32;
 
         self.fft_planned(&fft) / N
+    }
+
+    fn ifft_plottable(self) -> Array1<Complex32> {
+        let mut out = self.ifft();
+        let len = out.len();
+        out.as_slice_mut().unwrap().rotate_right((len + 1) / 2);
+        out
     }
 }
 

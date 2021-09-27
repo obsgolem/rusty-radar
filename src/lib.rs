@@ -2,7 +2,9 @@
 // Do this because numerics calls for a lot of non-standard names
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
+#![allow(confusable_idents)]
 pub mod antenna;
+pub mod array_ext;
 pub mod geodesic_polyhedron;
 pub mod helper;
 pub mod helper_traits;

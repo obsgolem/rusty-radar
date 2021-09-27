@@ -7,24 +7,16 @@ use std::{
     sync::Arc,
 };
 
-use ndarray::{linspace::linspace, Array1, Axis, Zip};
-use num::{
-    complex::Complex32,
-    iter::Range,
-    traits::{float::FloatCore, FloatConst},
-    Float, Integer, ToPrimitive,
-};
+use ndarray::{linspace::linspace, Array1, Zip};
+use num::{complex::Complex32, traits::FloatConst, Float};
 use rand::Rng;
 use rand_distr::{Distribution, Normal};
-use rustfft::{Fft, FftPlanner};
 
-use self::{
-    fir::{hamming_window, sinc_lowpass},
-    scalar::Scalar,
-};
+use self::{fft::FFT, fir::sinc_lowpass, scalar::Scalar};
 
 pub mod fft;
 pub mod fir;
+pub mod iir;
 pub mod scalar;
 
 pub fn sampling_freq_to_len(interval: f32, sampling_frequency: f32) -> usize {
@@ -102,7 +94,7 @@ impl SampledDomain {
 
     pub fn from_sample_interval(start: f32, interval: f32, num: usize) -> SampledDomain {
         let freq = 1. / interval;
-        let end = num as f32 * interval;
+        let end = start + (num as f32 * interval);
         SampledDomain {
             start,
             end,
@@ -128,10 +120,12 @@ impl SampledDomain {
         self.samples
     }
 
+    /// The interval (in time or frequency) between individual samples
     pub fn sample_interval(&self) -> f32 {
         self.interval
     }
 
+    /// The interval between the start value and end value.
     pub fn range(&self) -> f32 {
         self.end - self.start
     }
@@ -144,12 +138,13 @@ impl SampledDomain {
         Self::from_sample_interval(0., 1. / (self.range()), self.samples)
     }
 
-    // The fft is periodic as described at https://mathematica.stackexchange.com/a/33625. In order to plot this we need the frequencies arranged correctly.
-    // In order to use this, you will need to rotate the transformed signal as described in the link.
+    /// The fft is periodic as described at https://mathematica.stackexchange.com/a/33625. In order to plot this we need the frequencies arranged correctly.
+    /// In order to use this, you will need to rotate the transformed signal as described in the link.
     pub fn fft_frequencies_plottable(&self) -> SampledDomain {
+        let recip = 1. / (self.range());
         Self::from_sample_interval(
-            -((self.samples / 2) as f32), //
-            1. / (self.range()),
+            -recip * ((self.samples / 2) as f32), //
+            recip,
             self.samples,
         )
     }
@@ -327,36 +322,67 @@ pub fn convolve<T: Scalar>(x: &Array1<T>, y: &Array1<T>) -> Array1<T> {
     z
 }
 
-/*
-This function is black magic signal processing. If you have an arbitrary complex signal then you can modulate it onto
-a wave of high frequency by multiplying by a complex exponential oscillating at that frequency. You can then take
-the real part of the result to get a signal that carries the full data of the original signal, but which is physically
-realizable e.g. as a EM wave. At the recieve side you get a delayed, phase shifted, frequency shifted, and dampened
-version of the original. You then need to remove the high frequency component and retreive the complex waveform in order
-to do things like matched filtering and coherent integration. We do this by multiplying by the original complex exponential
-again. This yields a signal with extra data at 2f (with bandwidth b) where f is the modulation frequency.
-We can apply a so called low-pass filter to remove all frequency components that are above the bandwidth of the original complex signal.
-The result is the complex signal with all the relevant delays and shifts applied.
+pub fn convolve_f32(x: &Array1<f32>, y: &Array1<f32>) -> Array1<f32> {
+    (x.clone().fft() * y.clone().fft())
+        .ifft_plottable()
+        .mapv(|x| x.re())
+}
+
+pub fn convolve_complex32(x: &Array1<Complex32>, y: &Array1<Complex32>) -> Array1<Complex32> {
+    (x.clone().fft() * y.clone().fft()).ifft_plottable()
+}
+
+/// Modulates a baseband signal onto a carrier wave retrieved from the clock. The given time domain should be the time domain of the baseband signal.
+/// This functions by multiplying the baseband signal by an exponential oscillating at the carrier frequency, then taking the real part of that signal.
+/// This is useful because only real signals are physically realizable by e.g. an EM wave.
+pub fn qam_modulate(signal: Array1<Complex32>, time: SampledDomain, clock: Sine) -> Array1<f32> {
+    assert!(signal.len() == time.sample_count(), "Samples in the signal being modulated must match the number of samples represented by the time domain.");
+    (signal * clock.generate_signal(&time)).mapv(|x| x.re)
+}
+
+/**
+This function inverts [qam_modulate]. In order to demodulate you need to remove the high frequency carrier signal and retreive the baseband waveform.
+We do this by mixing the signal separately with the real and complex part of the original carrier wave.
+If you look at this in the frequency domain then this will result in an extra copy of the signal appearing at `+-2f_0` where `f_0` is the carrier frequency.
+We can apply a so called low-pass filter to remove all frequency components that are above the (one sided) bandwidth of the original complex signal.
+In order for this to work well, the baseband signal should have bandwidth that is less than the carrier frequency, preferably significantly less.
+Note that the bandwidth input on this function need only be a reasonable estimate of the actual bandwidth.
+
+Let `f_0` be the clock frequency. Let `B` be the (one sided) bandwidth of the transmitted signal.
+Let `B' be the bandwidth of the low pass filter used for demodulation. Let `f_s` be the sampling frequency. Then in order for this function to work
+the following relation must hold: `f_s > 2f_0+B+B'. We check a simplified version of this assumption via assertion
 */
 pub fn qam_demodulate(
     signal: Array1<f32>,
     clock: Sine,
-    t_start: f32,
-    dt: f32,
+    time: SampledDomain,
     bandwidth: f32,
 ) -> Array1<Complex32> {
-    let demodulate_signal = linspace(t_start, t_start + dt, signal.len())
-        .map(|t| clock.generate(t))
-        .collect::<Array1<Complex32>>();
+    assert!(bandwidth < clock.freq, "Bandwidth is too large to disambiguate between the carrier frequency and the baseband signal.");
+    assert!(
+        time.freq() > 2. * clock.freq + bandwidth,
+        "Sampling frequency is too small. The high frequency component of the \
+    demodulated will alias to within the passband of the lowpass filter"
+    );
+    let dt = time.range();
 
+    let demodulate_signal = clock.generate_signal(&time);
+
+    // A lot of sources will conjugate y here, but this doesn't change the result due to the low pass filter.
     let pre_low_pass = Zip::from(&signal)
         .and(&demodulate_signal)
-        .map_collect(|x, y| Complex32::new(2. * x * y.re, -2. * x * y.im));
+        .map_collect(|x, y| Complex32::new(2. * x * y.re, 2. * x * y.im));
 
-    // This needs to be somewhere between b and 2f-b
-    let pass_bandwidth = clock.freq - bandwidth;
+    // From the note in the description we know we need `B'<f_s-2f_0-B`. We also want `B'>B` and `B'<2f_0-B`.
+    // Any number satisfying these properties will suffice. Thus we will split the difference.
+    let pass_bandwidth = if time.freq() - 2. * clock.freq - bandwidth < 2. * clock.freq - bandwidth
+    {
+        0.5 * time.freq() - clock.freq
+    } else {
+        clock.freq
+    };
 
-    convolve(
+    convolve_complex32(
         &pre_low_pass,
         &sinc_lowpass(dt, signal.len() as f32 / dt, pass_bandwidth),
     )
@@ -364,8 +390,9 @@ pub fn qam_demodulate(
 
 mod test {
     use approx::assert_relative_eq;
+    use ndarray::Axis;
 
-    use crate::signal::{qam_demodulate, SampledDomain};
+    use crate::signal::{fir::tukey, qam_demodulate, qam_modulate, SampledDomain};
 
     use super::{Pulse, PulseType, Signal, Sine};
 
@@ -375,42 +402,36 @@ mod test {
         let domain2 = domain.fft_frequencies().fft_frequencies();
 
         assert_relative_eq!(domain.start(), domain2.start());
-
         assert_relative_eq!(domain.end(), domain2.end());
-
         assert_relative_eq!(domain.freq(), domain2.freq());
     }
 
-    // #[test]
-    // fn modulate_demodulate_inverse() {
-    //     let clock = Sine {
-    //         freq: 1.0,
-    //         phase: 0.0,
-    //     };
+    #[test]
+    fn modulate_demodulate_inverse() {
+        let clock = Sine {
+            freq: 100.0,
+            phase: 0.0,
+        };
+        let time = SampledDomain::new(0., 1., 1000.);
 
-    //     let pulse_unmodulated = Pulse {
-    //         clock: 0.0.into(),
-    //         length: 10., // Bandwidth 1/10
-    //         start_time: 0.,
-    //         amplitude: 1.,
-    //         sig_type: PulseType::Rectangle,
-    //     }
-    //     .generate_signal(-5., 15., 100.)
-    //     .signal();
+        let pulse_unmodulated = tukey(time.sample_count(), 0.3);
+        let demodulated = qam_demodulate(
+            qam_modulate(
+                pulse_unmodulated.mapv(|x| x.into()),
+                time.clone(),
+                clock.clone(),
+            ),
+            clock,
+            time.clone(),
+            1.,
+        )
+        .mapv(|x| x.re);
 
-    //     let pulse = Pulse {
-    //         clock: clock.clone(),
-    //         length: 10., // Bandwidth 1/10
-    //         start_time: 0.,
-    //         amplitude: 1.,
-    //         sig_type: PulseType::Rectangle,
-    //     }
-    //     .generate_signal(-5., 15., 100.);
-
-    //     let pulse_modulated = pulse.signal_ref().mapv(|x| x.re);
-
-    //     let demodulated = qam_demodulate(pulse_modulated, clock, -5., 20., 0.1);
-
-    //     assert_relative_eq!(demodulated, pulse_unmodulated);
-    // }
+        // We slice out the edges of the signal where noise from the low pass filter is most likely to appear
+        assert_relative_eq!(
+            demodulated.slice_axis(Axis(0), (150..(1000 - 150)).into()),
+            pulse_unmodulated.slice_axis(Axis(0), (150..(1000 - 150)).into()),
+            max_relative = 1e-2
+        );
+    }
 }

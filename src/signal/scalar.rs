@@ -3,16 +3,24 @@ use std::{
     ops::{Add, AddAssign, Mul, MulAssign},
 };
 
-use num::{complex::Complex32, Float};
+use num::{complex::Complex32, Float, Num};
 
 pub trait Scalar:
-    Copy + Mul<Self, Output = Self> + Add<Self, Output = Self> + AddAssign + MulAssign + Debug + Display
+    Copy
+    + Mul<Self, Output = Self>
+    + Add<Self, Output = Self>
+    + AddAssign
+    + MulAssign
+    + Debug
+    + Display
+    + Num
 {
     type CompType: Float + Scalar;
     fn norm_sqr(&self) -> Self::CompType;
     fn norm(&self) -> Self::CompType;
     fn conj(&self) -> Self;
-    fn zero() -> Self;
+    fn re(&self) -> Self::CompType;
+    fn im(&self) -> Self::CompType;
 }
 
 impl Scalar for f32 {
@@ -30,7 +38,11 @@ impl Scalar for f32 {
         *self
     }
 
-    fn zero() -> Self {
+    fn re(&self) -> Self::CompType {
+        *self
+    }
+
+    fn im(&self) -> Self::CompType {
         0.
     }
 }
@@ -50,7 +62,11 @@ impl Scalar for Complex32 {
         Complex32::conj(self)
     }
 
-    fn zero() -> Self {
-        0.0.into()
+    fn re(&self) -> Self::CompType {
+        self.re
+    }
+
+    fn im(&self) -> Self::CompType {
+        self.im
     }
 }
